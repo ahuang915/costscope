@@ -1,0 +1,10 @@
+{
+  "name": "costscope-marketplace",
+  "owner": "ahuang915",
+  "plugins": [
+    {
+      "name": "costscope",
+      "source": "."
+    }
+  ]
+}

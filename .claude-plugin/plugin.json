@@ -1,0 +1,5 @@
+{
+  "name": "costscope",
+  "version": "0.1.0",
+  "description": "Wrap batched LLM jobs with a sample-and-confirm cost estimator before spending."
+}
