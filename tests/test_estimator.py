@@ -8,6 +8,7 @@ from costscope import (
     SyntheticConfig,
     compute_estimate,
 )
+from costscope.pricing import builtin_cost
 
 
 def test_compute_estimate_basic():
@@ -31,8 +32,8 @@ def test_synthetic_run_proceeds():
     cfg = SyntheticConfig(seed=42)
     with CostEstimator(
         model="o1-mini",
-        total_calls=200,
-        sample_size=20,
+        total_iterations=200,
+        sample_iterations=20,
         synthetic=True,
         synthetic_config=cfg,
         auto_confirm=True,
@@ -40,7 +41,7 @@ def test_synthetic_run_proceeds():
         for _ in range(200):
             ce.completion(messages=[{"role": "user", "content": "hi"}])
 
-    assert ce.calls_made == 200
+    assert ce.iterations_done == 200
     assert ce.estimate is not None
     assert ce.estimate.sample_size == 20
     assert ce.actual_total_cost > 0
@@ -50,8 +51,8 @@ def test_synthetic_run_cancels():
     cfg = SyntheticConfig(seed=7)
     estimator = CostEstimator(
         model="o1-mini",
-        total_calls=100,
-        sample_size=10,
+        total_iterations=100,
+        sample_iterations=10,
         synthetic=True,
         synthetic_config=cfg,
         auto_confirm=False,
@@ -61,7 +62,7 @@ def test_synthetic_run_cancels():
             for _ in range(100):
                 ce.completion(messages=[{"role": "user", "content": "hi"}])
 
-    assert estimator.calls_made == 10
+    assert estimator.iterations_done == 10
     assert estimator.estimate is not None
 
 
@@ -74,8 +75,8 @@ def test_threshold_auto_proceed():
     )
     with CostEstimator(
         model="o1-mini",
-        total_calls=50,
-        sample_size=5,
+        total_iterations=50,
+        sample_iterations=5,
         synthetic=True,
         synthetic_config=cfg,
         threshold_usd=1.00,
@@ -84,7 +85,7 @@ def test_threshold_auto_proceed():
         for _ in range(50):
             ce.completion(messages=[{"role": "user", "content": "hi"}])
 
-    assert ce.calls_made == 50
+    assert ce.iterations_done == 50
 
 
 def test_threshold_blocks_when_estimate_too_high():
@@ -96,8 +97,8 @@ def test_threshold_blocks_when_estimate_too_high():
     )
     estimator = CostEstimator(
         model="o1",
-        total_calls=10000,
-        sample_size=10,
+        total_iterations=10000,
+        sample_iterations=10,
         synthetic=True,
         synthetic_config=cfg,
         threshold_usd=1.00,
@@ -108,7 +109,7 @@ def test_threshold_blocks_when_estimate_too_high():
             for _ in range(10000):
                 ce.completion(messages=[{"role": "user", "content": "hi"}])
 
-    assert estimator.calls_made == 10
+    assert estimator.iterations_done == 10
     assert estimator.estimate.upper > 1.00
 
 
@@ -125,3 +126,165 @@ def test_confidence_levels_ordered():
     e95 = compute_estimate(costs, 1000, confidence=0.95)
     e99 = compute_estimate(costs, 1000, confidence=0.99)
     assert e90.margin < e95.margin < e99.margin
+
+
+def test_iteration_groups_multiple_calls():
+    """3 calls per iteration → per-iteration cost is ~3× per-call cost."""
+    cfg = SyntheticConfig(seed=11)
+    with CostEstimator(
+        model="o1-mini",
+        total_iterations=30,
+        sample_iterations=10,
+        synthetic=True,
+        synthetic_config=cfg,
+        auto_confirm=True,
+    ) as ce:
+        for _ in range(30):
+            with ce.iteration():
+                ce.completion(messages=[{"role": "user", "content": "a"}])
+                ce.completion(messages=[{"role": "user", "content": "b"}])
+                ce.completion(messages=[{"role": "user", "content": "c"}])
+
+    assert ce.iterations_done == 30
+    assert ce.calls_made == 90  # 30 iterations × 3 calls
+    assert ce.avg_calls_per_iteration == 3.0
+    # Sample average should reflect 3 calls' worth of cost per iteration
+    sample_costs = ce._sample_costs
+    assert len(sample_costs) == 10
+    assert all(c > 0 for c in sample_costs)
+
+
+def test_iteration_back_compat_without_context():
+    """Without iteration(), each call is its own iteration (0.1.x behavior)."""
+    cfg = SyntheticConfig(seed=3)
+    with CostEstimator(
+        model="o1-mini",
+        total_calls=50,  # back-compat alias
+        sample_size=10,  # back-compat alias
+        synthetic=True,
+        synthetic_config=cfg,
+        auto_confirm=True,
+    ) as ce:
+        for _ in range(50):
+            ce.completion(messages=[{"role": "user", "content": "x"}])
+
+    assert ce.iterations_done == 50
+    assert ce.calls_made == 50  # alias still works
+
+
+def test_time_estimate_present_with_latency():
+    cfg = SyntheticConfig(seed=42, latency_median=0.5, latency_sigma=0.2)
+    with CostEstimator(
+        model="o1-mini",
+        total_iterations=100,
+        sample_iterations=10,
+        synthetic=True,
+        synthetic_config=cfg,
+        auto_confirm=True,
+    ) as ce:
+        for _ in range(100):
+            ce.completion(messages=[{"role": "user", "content": "hi"}])
+
+    assert ce.time_estimate is not None
+    assert ce.time_estimate.total_estimate > 0
+    assert ce.wall_time_estimate is not None
+    assert ce.wall_time_estimate == ce.time_estimate.total_estimate  # concurrency=1
+
+
+def test_concurrency_divides_wall_time():
+    cfg = SyntheticConfig(seed=42, latency_median=1.0, latency_sigma=0.2)
+    with CostEstimator(
+        model="o1-mini",
+        total_iterations=100,
+        sample_iterations=10,
+        synthetic=True,
+        synthetic_config=cfg,
+        auto_confirm=True,
+        concurrency=10,
+    ) as ce:
+        for _ in range(100):
+            ce.completion(messages=[{"role": "user", "content": "hi"}])
+
+    assert ce.wall_time_estimate == pytest.approx(ce.time_estimate.total_estimate / 10)
+
+
+def test_record_escape_hatch():
+    """ce.record(cost, time) lets the caller drive the SDK themselves."""
+    with CostEstimator(
+        model="o1-mini",
+        total_iterations=10,
+        sample_iterations=5,
+        synthetic=True,  # synthetic so we don't need an SDK
+        synthetic_config=SyntheticConfig(seed=0),
+        auto_confirm=True,
+    ) as ce:
+        for _ in range(10):
+            ce.record(cost=0.01, elapsed=0.5)
+
+    assert ce.iterations_done == 10
+    assert ce.actual_total_cost == pytest.approx(0.10)
+    assert ce.actual_total_time == pytest.approx(5.0)
+
+
+def test_record_inside_iteration_accumulates():
+    with CostEstimator(
+        model="o1-mini",
+        total_iterations=4,
+        sample_iterations=2,
+        synthetic=True,
+        synthetic_config=SyntheticConfig(seed=0),
+        auto_confirm=True,
+    ) as ce:
+        for _ in range(4):
+            with ce.iteration():
+                ce.record(cost=0.01, elapsed=0.1)
+                ce.record(cost=0.02, elapsed=0.2)
+
+    assert ce.iterations_done == 4
+    # 4 iterations × 0.03 cost = 0.12; × 0.3s = 1.2s
+    assert ce.actual_total_cost == pytest.approx(0.12)
+    assert ce.actual_total_time == pytest.approx(1.2)
+
+
+def test_image_token_pricing():
+    """gpt-image-1: 1M image-output tokens at $40 → $40."""
+    cost = builtin_cost("gpt-image-1", prompt_tokens=0, completion_tokens=0, image_output_tokens=1_000_000)
+    assert cost == pytest.approx(40.00)
+    # Text-only model ignores image-output tokens
+    cost = builtin_cost("o1-mini", prompt_tokens=0, completion_tokens=0, image_output_tokens=1_000_000)
+    assert cost == 0.0
+
+
+def test_api_auto_routes_gpt_image():
+    ce = CostEstimator(
+        model="gpt-image-1",
+        total_iterations=5,
+        sample_iterations=2,
+        synthetic=True,
+        synthetic_config=SyntheticConfig(seed=0),
+        auto_confirm=True,
+    )
+    assert ce.api == "responses"
+
+
+def test_api_auto_keeps_chat_for_classic_models():
+    ce = CostEstimator(
+        model="o1-mini",
+        total_iterations=5,
+        sample_iterations=2,
+        synthetic=True,
+        synthetic_config=SyntheticConfig(seed=0),
+        auto_confirm=True,
+    )
+    assert ce.api == "chat"
+
+
+def test_rejects_both_total_aliases():
+    with pytest.raises(ValueError, match="only one"):
+        CostEstimator(
+            model="o1-mini",
+            total_iterations=10,
+            total_calls=10,
+            synthetic=True,
+            auto_confirm=True,
+        )

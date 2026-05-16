@@ -4,16 +4,32 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "costscope"
-version = "0.1.0"
-description = "Real-time reasoning-token cost estimation for batched LLM jobs."
+version = "0.2.0"
+description = "Cost and wall-time estimation for batched LLM jobs (per-iteration sampling with confidence intervals)."
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "Anwen Huang", email = "anwenhuang0@gmail.com" }]
 requires-python = ">=3.10"
+keywords = ["llm", "cost", "openai", "anthropic", "budget"]
+classifiers = [  
+  "Programming Language :: Python :: 3",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+]
 dependencies = [
     "tqdm>=4.65",
 ]
 
+[project.urls]
+Homepage = "https://github.com/ahuang915/costscope"
+Issues = "https://github.com/ahuang915/costscope/issues"
+
 [project.optional-dependencies]
+openai = ["openai>=1.0"]
+anthropic = ["anthropic>=0.30"]
 litellm = ["litellm>=1.40"]
-dev = ["pytest>=7", "litellm>=1.40"]
+dev = ["pytest>=7", "build", "twine"]
+
 
 [tool.setuptools.packages.find]
 where = ["."]

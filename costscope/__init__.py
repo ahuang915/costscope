@@ -11,4 +11,4 @@ __all__ = [
     "SyntheticConfig",
     "compute_estimate",
 ]
-__version__ = "0.1.0"
+__version__ = "0.2.0"
