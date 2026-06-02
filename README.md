@@ -118,6 +118,17 @@ See `examples/basic.py` for a full runnable example.
 
 OpenAI o-series (`o1`, `o3`, `o3-mini`, ...), GPT-4o, GPT-5, gpt-image-1, Claude 4.x (Opus, Sonnet, Haiku). For other models, supply prices via `SyntheticConfig.custom_prices` or extend `pricing.py`.
 
+### Auto-refreshed pricing
+
+On the first price lookup, costscope fetches [LiteLLM's public price database](https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json) and caches it to `~/.cache/costscope/litellm_prices.json` for ~7 days. LiteLLM tracks hundreds of models across providers and is updated when prices change, so most of the time you get fresh rates without doing anything. The built-in `_BUILTIN_PRICES` table is the fallback when LiteLLM does not know the model or the network is unavailable.
+
+```python
+from costscope import lookup_prices
+lookup_prices("claude-opus-4-7")   # (input_per_1m, output_per_1m, image_per_1m)
+```
+
+Opt out of the fetch entirely with `COSTSCOPE_OFFLINE=1` — useful for airgapped CI, reproducible audits, or any time you want costscope to stay silent on the network. To force a refresh now (ignoring the 7-day TTL), call `costscope.litellm_prices.force_refresh()`.
+
 ## Use it as a Claude Code skill
 
 I've also packaged costscope as a Claude Code plugin so the wrapping happens automatically. When Claude is writing or editing code that loops over LLM calls — the canonical `for x in items: client.chat.completions.create(...)` shape, or its Anthropic equivalent — the skill nudges it to reach for `CostEstimator` before the diff ever lands. It skips one-shot calls, agentic loops with unpredictable branching, and jobs already gated by another budget mechanism, so it stays out of the way when sampling-based estimation isn't the right tool.

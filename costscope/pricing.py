@@ -1,9 +1,17 @@
-"""Built-in pricing fallback for synthetic mode and when no external pricing source is available.
+"""Per-1M-token pricing, with LiteLLM auto-refresh and a hand-maintained fallback.
 
-Prices are USD per 1M tokens. Reasoning tokens are billed as output tokens
-for both OpenAI o-series and Anthropic extended-thinking models. The third
-field, when non-zero, prices image-output tokens separately (e.g. gpt-image-1).
+Lookups consult LiteLLM's hosted price database first (cached locally for ~7
+days) and fall back to `_BUILTIN_PRICES` when LiteLLM does not know the model
+or the network is unavailable. Set COSTSCOPE_OFFLINE=1 to skip LiteLLM entirely.
+
+Reasoning tokens are billed as output tokens for both OpenAI o-series and
+Anthropic extended-thinking models. The third field, when non-zero, prices
+image-output tokens separately (e.g. gpt-image-1).
 """
+
+from typing import Optional
+
+from . import litellm_prices
 
 # (input_per_1m, output_per_1m, image_output_per_1m)
 _BUILTIN_PRICES: dict[str, tuple[float, float, float]] = {
@@ -24,20 +32,39 @@ _BUILTIN_PRICES: dict[str, tuple[float, float, float]] = {
 }
 
 
+def lookup_prices(model: str) -> Optional[tuple[float, float, float]]:
+    """Per-1M-token (input, output, image_output) prices for `model`, or None.
+
+    Tries LiteLLM's hosted price database first (cached for ~7 days), then
+    falls back to the built-in table. Use the env var COSTSCOPE_OFFLINE=1 to
+    skip the LiteLLM lookup entirely. Image-output pricing comes from the
+    built-in table — LiteLLM does not currently expose it in a uniform field.
+    """
+    remote = litellm_prices.lookup(model)
+    key = _resolve(model)
+    builtin = _BUILTIN_PRICES[key] if key else None
+    if remote is not None:
+        # Keep the local image-output price if we have one — LiteLLM lacks it.
+        img = builtin[2] if builtin else 0.0
+        return (remote[0], remote[1], img)
+    return builtin
+
+
 def builtin_cost(
     model: str,
     prompt_tokens: int,
     completion_tokens: int,
     image_output_tokens: int = 0,
 ) -> float:
-    key = _resolve(model)
-    if key is None:
+    prices = lookup_prices(model)
+    if prices is None:
         raise KeyError(
-            f"No built-in price for model '{model}'. "
-            f"Known: {sorted(_BUILTIN_PRICES)}. "
-            f"Pass synthetic_config with explicit prices."
+            f"No price found for model '{model}'. "
+            f"Known built-ins: {sorted(_BUILTIN_PRICES)}. "
+            f"Pass synthetic_config with explicit prices, extend pricing.py, "
+            f"or check connectivity to LiteLLM's price database."
         )
-    in_price, out_price, img_price = _BUILTIN_PRICES[key]
+    in_price, out_price, img_price = prices
     return (
         (prompt_tokens / 1_000_000) * in_price
         + (completion_tokens / 1_000_000) * out_price
