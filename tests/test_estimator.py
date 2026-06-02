@@ -189,6 +189,70 @@ def test_time_estimate_present_with_latency():
     assert ce.time_estimate.total_estimate > 0
 
 
+def test_drift_warns_when_post_sample_costs_jump(capsys):
+    """If post-sample iterations are much pricier than the sample, drift fires."""
+    with CostEstimator(
+        model="o1-mini",
+        total_iterations=60,
+        sample_iterations=10,
+        synthetic=True,
+        synthetic_config=SyntheticConfig(seed=1),
+        auto_confirm=True,
+        drift_check_every=10,
+    ) as ce:
+        for _ in range(10):
+            ce.record(cost=0.01)  # tight sample → narrow CI
+        for _ in range(20):
+            ce.record(cost=0.10)  # 10x jump in post-sample
+
+    err = capsys.readouterr().err
+    assert "drift" in err.lower()
+    assert "above" in err
+    assert ce.drift_detected
+
+
+def test_drift_quiet_when_costs_stay_within_band(capsys):
+    """No warning when post-sample iterations stay near the sample mean."""
+    with CostEstimator(
+        model="o1-mini",
+        total_iterations=60,
+        sample_iterations=10,
+        synthetic=True,
+        synthetic_config=SyntheticConfig(seed=2),
+        auto_confirm=True,
+        drift_check_every=10,
+    ) as ce:
+        for _ in range(10):
+            ce.record(cost=0.01)
+        for _ in range(20):
+            ce.record(cost=0.01)  # same as sample
+
+    err = capsys.readouterr().err
+    assert "drift" not in err.lower()
+    assert not ce.drift_detected
+
+
+def test_drift_disabled_with_zero(capsys):
+    """drift_check_every=0 disables the check entirely."""
+    with CostEstimator(
+        model="o1-mini",
+        total_iterations=60,
+        sample_iterations=10,
+        synthetic=True,
+        synthetic_config=SyntheticConfig(seed=3),
+        auto_confirm=True,
+        drift_check_every=0,
+    ) as ce:
+        for _ in range(10):
+            ce.record(cost=0.01)
+        for _ in range(20):
+            ce.record(cost=0.10)
+
+    err = capsys.readouterr().err
+    assert "drift" not in err.lower()
+    assert not ce.drift_detected
+
+
 def test_record_escape_hatch():
     """ce.record(cost, time) lets the caller drive the SDK themselves."""
     with CostEstimator(

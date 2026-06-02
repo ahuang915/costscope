@@ -58,6 +58,18 @@ The first 20 iterations are billed normally and used to build a per-iteration co
 
 Decline and subsequent `.completion()` calls raise `EstimationCancelled`.
 
+### Drift detection
+
+The sample is only honest if the rest of the job keeps looking like it. costscope checks the running mean of post-sample iterations every 20 by default and prints a one-line warning to stderr if it walks outside the original CI band:
+
+```
+[costscope] drift at iter 60: post-sample mean $0.0800/iter is above the
+95% CI band [$0.0100, $0.0100] (+700.0% vs sample mean). Revised projection
+at current rate: $6.40.
+```
+
+It warns once per excursion and re-arms when the running mean returns inside the band, so a temporary spike doesn't spam stderr. Use `drift_check_every=N` to change the cadence, or `drift_check_every=0` to disable. Programmatic access via `ce.drift_detected`.
+
 ### Skip the prompt
 
 - `auto_confirm=True` — always proceed

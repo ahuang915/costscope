@@ -47,6 +47,7 @@ class CostEstimator:
         threshold_usd: Optional[float] = None,
         confirm_fn: Optional[ConfirmFn] = None,
         api: str = _API_AUTO,
+        drift_check_every: int = 20,
     ):
         total = self._pick_one(total_iterations, total_calls, "total_iterations", "total_calls")
         if total is None or total < 1:
@@ -67,6 +68,8 @@ class CostEstimator:
         self.auto_confirm = auto_confirm
         self.confirm_fn = confirm_fn or _default_confirm
         self.api = self._resolve_api(model, api)
+        self._drift_check_every = max(drift_check_every, 0)
+        self._drift_detected = False
 
         self._synthetic = synthetic
         self._backend = SyntheticBackend(synthetic_config or SyntheticConfig()) if synthetic else None
@@ -205,6 +208,45 @@ class CostEstimator:
             self._exec_call_counts.append(calls)
             if self._exec_bar is not None:
                 self._exec_bar.update(1)
+            self._maybe_check_drift()
+
+    def _maybe_check_drift(self) -> None:
+        """Warn once if the running post-sample mean walks outside the CI band.
+
+        Re-arms if the running mean returns inside the band, so a recovered job
+        can warn again on a later excursion.
+        """
+        if self._drift_check_every <= 0 or self._final_estimate is None:
+            return
+        n = len(self._exec_costs)
+        if n == 0 or n % self._drift_check_every != 0:
+            return
+        est = self._final_estimate
+        if est.total_calls <= 0:
+            return
+        per_iter_margin = est.margin / est.total_calls
+        lo = est.mean_per_call - per_iter_margin
+        hi = est.mean_per_call + per_iter_margin
+        running_mean = sum(self._exec_costs) / n
+        outside = running_mean < lo or running_mean > hi
+        if outside and not self._drift_detected:
+            direction = "above" if running_mean > hi else "below"
+            revised_total = running_mean * est.total_calls
+            delta_pct = (
+                (running_mean - est.mean_per_call) / est.mean_per_call * 100
+                if est.mean_per_call else 0.0
+            )
+            print(
+                f"\n[costscope] drift at iter {self._iterations_done}: "
+                f"post-sample mean ${running_mean:.4f}/iter is {direction} the "
+                f"{int(est.confidence*100)}% CI band "
+                f"[${lo:.4f}, ${hi:.4f}] ({delta_pct:+.1f}% vs sample mean). "
+                f"Revised projection at current rate: ${revised_total:,.2f}.",
+                file=sys.stderr,
+            )
+            self._drift_detected = True
+        elif not outside and self._drift_detected:
+            self._drift_detected = False
 
     def _dispatch(self, kwargs: dict) -> tuple[Any, float, float]:
         if self._synthetic:
@@ -298,6 +340,11 @@ class CostEstimator:
     @property
     def actual_total_cost(self) -> float:
         return sum(self._sample_costs) + sum(self._exec_costs)
+
+    @property
+    def drift_detected(self) -> bool:
+        """True if the running post-sample mean is currently outside the CI band."""
+        return self._drift_detected
 
     @property
     def actual_total_time(self) -> float:
