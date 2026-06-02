@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "costscope"
-version = "0.2.0"
+version = "0.3.0"
 description = "Cost and wall-time estimation for batched LLM jobs (per-iteration sampling with confidence intervals)."
 readme = "README.md"
 license = { text = "MIT" }
