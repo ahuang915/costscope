@@ -120,7 +120,20 @@ OpenAI o-series (`o1`, `o3`, `o3-mini`, ...), GPT-4o, GPT-5, gpt-image-1, Claude
 
 ## Use it as a Claude Code skill
 
-I've also packaged costscope as a Claude Code plugin so the wrapping happens automatically. When Claude is writing or editing code that loops over LLM calls — the canonical `for x in items: client.chat.completions.create(...)` shape, or its Anthropic equivalent — the skill nudges it to reach for `CostEstimator` before the diff ever lands. It skips one-shot calls, agentic loops with unpredictable branching, and jobs already gated by another budget mechanism, so it stays out of the way when sampling-based estimation isn't the right tool. The plugin manifest lives at `.claude-plugin/marketplace.json` and the skill itself is at `skills/costscope/SKILL.md` — point Claude Code at this repo as a marketplace source to install.
+I've also packaged costscope as a Claude Code plugin so the wrapping happens automatically. When Claude is writing or editing code that loops over LLM calls — the canonical `for x in items: client.chat.completions.create(...)` shape, or its Anthropic equivalent — the skill nudges it to reach for `CostEstimator` before the diff ever lands. It skips one-shot calls, agentic loops with unpredictable branching, and jobs already gated by another budget mechanism, so it stays out of the way when sampling-based estimation isn't the right tool.
+
+To install in a Claude Code session, register this repo as a plugin marketplace and then install the `costscope` plugin from it:
+
+```text
+/plugin marketplace add ahuang915/costscope
+/plugin install costscope@costscope-marketplace
+```
+
+The first command points Claude Code at `.claude-plugin/marketplace.json` in this repo; the second installs the plugin, which loads `skills/costscope/SKILL.md` into your session. Run `/plugin list` afterwards to confirm it's enabled — the skill will then surface automatically whenever you're about to write a batched LLM loop. To pin to a local checkout instead (useful while editing the skill yourself), pass an absolute path to `/plugin marketplace add` in place of the GitHub shorthand:
+
+```text
+/plugin marketplace add /absolute/path/to/costscope
+```
 
 ## Tests
 
