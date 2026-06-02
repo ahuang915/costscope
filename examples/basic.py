@@ -1,7 +1,7 @@
 """Synthetic demo — runs end-to-end without spending a cent.
 
 Each iteration makes 2 LLM calls. We sample 20 iterations, then a 95% CI is
-projected over 500 iterations of cost and (sequential) wall time.
+projected over 500 iterations of cost and wall time.
 
     python examples/basic.py
 """
@@ -29,7 +29,6 @@ def main():
         confidence=0.95,
         synthetic=True,
         synthetic_config=cfg,
-        concurrency=4,            # we plan to run 4 iterations in parallel
         auto_confirm=True,        # for the demo; remove to get the interactive prompt
     ) as ce:
         for item in items:
@@ -42,7 +41,7 @@ def main():
         f"Projected cost:  ${ce.estimate.total_estimate:.2f} "
         f"({int(ce.estimate.confidence*100)}% CI ±${ce.estimate.margin:.2f})"
     )
-    print(f"Projected wall time: {ce.wall_time_estimate:.1f}s @ concurrency={ce.concurrency}")
+    print(f"Projected wall time: {ce.time_estimate.total_estimate:.1f}s")
 
 
 if __name__ == "__main__":

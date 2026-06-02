@@ -27,9 +27,7 @@ class CostEstimator:
     to roll several calls into one sample; the CI is then projected over
     `total_iterations`, not raw call count.
 
-    Per-iteration wall time is recorded alongside cost. Projected wall time is
-    sequential by default; pass `concurrency=N` to divide by N for a parallel
-    estimate.
+    Per-iteration wall time is recorded alongside cost and projected sequentially.
 
     `api="auto"` routes models to the right OpenAI endpoint (chat completions
     or responses). Force one explicitly with `api="chat"` or `api="responses"`.
@@ -49,7 +47,6 @@ class CostEstimator:
         threshold_usd: Optional[float] = None,
         confirm_fn: Optional[ConfirmFn] = None,
         api: str = _API_AUTO,
-        concurrency: int = 1,
     ):
         total = self._pick_one(total_iterations, total_calls, "total_iterations", "total_calls")
         if total is None or total < 1:
@@ -59,8 +56,6 @@ class CostEstimator:
             raise ValueError("sample size must be >= 2 to compute a CI")
         if confidence not in (0.90, 0.95, 0.99):
             raise ValueError("confidence must be one of 0.90, 0.95, 0.99")
-        if concurrency < 1:
-            raise ValueError("concurrency must be >= 1")
         if api not in (_API_AUTO, _API_CHAT, _API_RESPONSES):
             raise ValueError("api must be 'auto', 'chat', or 'responses'")
 
@@ -71,7 +66,6 @@ class CostEstimator:
         self.threshold_usd = threshold_usd
         self.auto_confirm = auto_confirm
         self.confirm_fn = confirm_fn or _default_confirm
-        self.concurrency = concurrency
         self.api = self._resolve_api(model, api)
 
         self._synthetic = synthetic
@@ -259,7 +253,6 @@ class CostEstimator:
                 self.model,
                 sampled_actual,
                 time_est=time_est,
-                concurrency=self.concurrency,
                 avg_calls_per_iter=avg_calls,
             ),
             file=sys.stderr,
@@ -299,15 +292,8 @@ class CostEstimator:
 
     @property
     def time_estimate(self) -> Optional[CostEstimate]:
-        """Sequential wall-time estimate (seconds) over total_iterations."""
+        """Wall-time estimate (seconds) over total_iterations, run sequentially."""
         return self._final_time_estimate
-
-    @property
-    def wall_time_estimate(self) -> Optional[float]:
-        """Projected wall time in seconds, divided by concurrency."""
-        if self._final_time_estimate is None:
-            return None
-        return self._final_time_estimate.total_estimate / max(self.concurrency, 1)
 
     @property
     def actual_total_cost(self) -> float:
@@ -315,7 +301,7 @@ class CostEstimator:
 
     @property
     def actual_total_time(self) -> float:
-        """Sum of measured per-iteration wall times. Sequential — does not account for concurrency."""
+        """Sum of measured per-iteration wall times."""
         return sum(self._sample_times) + sum(self._exec_times)
 
     @property

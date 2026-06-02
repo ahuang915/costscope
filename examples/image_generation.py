@@ -39,7 +39,6 @@ def main(synthetic: bool):
             confidence=0.95,
             synthetic=synthetic,
             synthetic_config=cfg,
-            concurrency=5,             # 5 parallel image jobs
         ) as ce:
             for prompt in prompts:
                 # Real call (synthetic=False): goes to OpenAI Responses API
@@ -57,7 +56,7 @@ def main(synthetic: bool):
         f"Projected: ${ce.estimate.total_estimate:.2f} "
         f"({int(ce.estimate.confidence*100)}% CI ±${ce.estimate.margin:.2f})"
     )
-    print(f"Wall time @ concurrency={ce.concurrency}: {ce.wall_time_estimate:.0f}s")
+    print(f"Wall time: {ce.time_estimate.total_estimate:.0f}s")
 
 
 if __name__ == "__main__":

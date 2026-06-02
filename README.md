@@ -50,24 +50,13 @@ The first 20 iterations are billed normally and used to build a per-iteration co
 │  Projected:    $10.81                                      │
 │  95% CI cost:  $10.05 – $11.57  (±7.0%)                    │
 │  Per iter time:  3.4s                                      │
-│  Wall time:    28min  (sequential)                         │
+│  Wall time:    28min                                       │
 │  95% CI time:  26min – 30min                               │
 └────────────────────────────────────────────────────────────┘
   → Proceed? [y/N]:
 ```
 
 Decline and subsequent `.completion()` calls raise `EstimationCancelled`.
-
-### Concurrency
-
-If you plan to run iterations in parallel, pass `concurrency=N` so the wall-time projection accounts for it:
-
-```python
-with CostEstimator(model="o1", total_iterations=500, concurrency=10) as ce:
-    ...
-```
-
-Cost is unchanged; wall-time projection is divided by N.
 
 ### Skip the prompt
 
@@ -88,7 +77,7 @@ The adapter translates `messages=` → `input=` and reads tokens from `response.
 ### Image generation (gpt-image-1)
 
 ```python
-with CostEstimator(model="gpt-image-1", total_iterations=200, concurrency=5) as ce:
+with CostEstimator(model="gpt-image-1", total_iterations=200) as ce:
     for prompt in prompts:
         ce.completion(input=prompt, tools=[{"type": "image_generation"}])
 ```
@@ -128,6 +117,10 @@ See `examples/basic.py` for a full runnable example.
 ## Supported models (built-in pricing)
 
 OpenAI o-series (`o1`, `o3`, `o3-mini`, ...), GPT-4o, GPT-5, gpt-image-1, Claude 4.x (Opus, Sonnet, Haiku). For other models, supply prices via `SyntheticConfig.custom_prices` or extend `pricing.py`.
+
+## Use it as a Claude Code skill
+
+I've also packaged costscope as a Claude Code plugin so the wrapping happens automatically. When Claude is writing or editing code that loops over LLM calls — the canonical `for x in items: client.chat.completions.create(...)` shape, or its Anthropic equivalent — the skill nudges it to reach for `CostEstimator` before the diff ever lands. It skips one-shot calls, agentic loops with unpredictable branching, and jobs already gated by another budget mechanism, so it stays out of the way when sampling-based estimation isn't the right tool. The plugin manifest lives at `.claude-plugin/marketplace.json` and the skill itself is at `skills/costscope/SKILL.md` — point Claude Code at this repo as a marketplace source to install.
 
 ## Tests
 

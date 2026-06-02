@@ -8,7 +8,6 @@ def format_estimate(
     model: str,
     sampled_actual: float,
     time_est: Optional[CostEstimate] = None,
-    concurrency: int = 1,
     unit_label: str = "iter",
     avg_calls_per_iter: Optional[float] = None,
 ) -> str:
@@ -37,20 +36,9 @@ def format_estimate(
         _row(width, f"  {pct}% CI cost:   ${est.lower:,.2f} – ${est.upper:,.2f}  ({rel_str})"),
     ]
     if time_est is not None:
-        seq_total = time_est.total_estimate
-        seq_lo = time_est.lower
-        seq_hi = time_est.upper
-        c = max(concurrency, 1)
-        wall = seq_total / c
-        wall_lo = seq_lo / c
-        wall_hi = seq_hi / c
         lines.append(_row(width, f"  Per {unit_label} time:  {_fmt_time(time_est.mean_per_call)}"))
-        if c > 1:
-            lines.append(_row(width, f"  Wall time:    {_fmt_time(wall)}  (concurrency={c})"))
-            lines.append(_row(width, f"  {pct}% CI time:   {_fmt_time(wall_lo)} – {_fmt_time(wall_hi)}"))
-        else:
-            lines.append(_row(width, f"  Wall time:    {_fmt_time(wall)}  (sequential)"))
-            lines.append(_row(width, f"  {pct}% CI time:   {_fmt_time(seq_lo)} – {_fmt_time(seq_hi)}"))
+        lines.append(_row(width, f"  Wall time:    {_fmt_time(time_est.total_estimate)}"))
+        lines.append(_row(width, f"  {pct}% CI time:   {_fmt_time(time_est.lower)} – {_fmt_time(time_est.upper)}"))
 
     lines.append(f"└{sep}┘")
     return "\n".join(lines)

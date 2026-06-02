@@ -187,25 +187,6 @@ def test_time_estimate_present_with_latency():
 
     assert ce.time_estimate is not None
     assert ce.time_estimate.total_estimate > 0
-    assert ce.wall_time_estimate is not None
-    assert ce.wall_time_estimate == ce.time_estimate.total_estimate  # concurrency=1
-
-
-def test_concurrency_divides_wall_time():
-    cfg = SyntheticConfig(seed=42, latency_median=1.0, latency_sigma=0.2)
-    with CostEstimator(
-        model="o1-mini",
-        total_iterations=100,
-        sample_iterations=10,
-        synthetic=True,
-        synthetic_config=cfg,
-        auto_confirm=True,
-        concurrency=10,
-    ) as ce:
-        for _ in range(100):
-            ce.completion(messages=[{"role": "user", "content": "hi"}])
-
-    assert ce.wall_time_estimate == pytest.approx(ce.time_estimate.total_estimate / 10)
 
 
 def test_record_escape_hatch():
