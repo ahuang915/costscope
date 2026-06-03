@@ -13,4 +13,4 @@ __all__ = [
     "compute_estimate",
     "lookup_prices",
 ]
-__version__ = "0.5.0"
+__version__ = "0.6.0"

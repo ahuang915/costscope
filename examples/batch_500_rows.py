@@ -1,4 +1,11 @@
-"""Run a 2-call-per-row pipeline over 500 rows with claude-opus-4-7, gated by a cost estimate."""
+"""Run a 2-call-per-row pipeline over 500 rows with claude-opus-4-7, gated by a cost estimate.
+
+If you decline at the sample-end prompt, costscope offers to save the partial
+sample data — the rows already processed plus the per-iteration estimate.
+"""
+
+import json
+from pathlib import Path
 
 from costscope import CostEstimator, EstimationCancelled
 
@@ -16,12 +23,27 @@ def summarize_prompt(facts: str) -> str:
 
 results = []
 
+
+def save_sample(ce: CostEstimator) -> None:
+    out = Path("sample_run.json")
+    out.write_text(json.dumps({
+        "model": ce.model,
+        "iterations_done": ce.iterations_done,
+        "actual_cost_usd": ce.actual_total_cost,
+        "estimate_total_usd": ce.estimate.total_estimate,
+        "estimate_per_iter_usd": ce.estimate.mean_per_call,
+        "results": results,
+    }, indent=2))
+    print(f"  → saved {len(results)} sample outputs to {out}")
+
+
 try:
     with CostEstimator(
         model="claude-opus-4-7",
         total_iterations=len(rows),
         sample_iterations=20,
         confidence=0.95,
+        on_cancel=save_sample,
     ) as ce:
         for row in rows:
             with ce.iteration():

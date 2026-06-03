@@ -13,6 +13,7 @@ from .ui import format_estimate
 
 
 ConfirmFn = Callable[[CostEstimate, str], bool]
+CancelCleanupFn = Callable[["CostEstimator"], None]
 
 _API_AUTO = "auto"
 _API_CHAT = "chat"
@@ -46,6 +47,7 @@ class CostEstimator:
         auto_confirm: Optional[bool] = None,
         threshold_usd: Optional[float] = None,
         confirm_fn: Optional[ConfirmFn] = None,
+        on_cancel: Optional[CancelCleanupFn] = None,
         api: str = _API_AUTO,
         drift_check_every: int = 20,
     ):
@@ -67,6 +69,7 @@ class CostEstimator:
         self.threshold_usd = threshold_usd
         self.auto_confirm = auto_confirm
         self.confirm_fn = confirm_fn or _default_confirm
+        self.on_cancel = on_cancel
         self.api = self._resolve_api(model, api)
         self._drift_check_every = max(drift_check_every, 0)
         self._drift_detected = False
@@ -210,6 +213,23 @@ class CostEstimator:
                 self._exec_bar.update(1)
             self._maybe_check_drift()
 
+    def _maybe_run_cleanup(self) -> None:
+        """Prompt the user; if they confirm, invoke on_cancel with self.
+
+        Skipped silently when no callback is registered or when the prompt EOFs
+        (non-interactive caller). Exceptions from the callback propagate so the
+        caller sees what went wrong saving.
+        """
+        if self.on_cancel is None:
+            return
+        try:
+            ans = input("  → Save sample run? [y/N]: ").strip().lower()
+        except EOFError:
+            return
+        if ans not in ("y", "yes"):
+            return
+        self.on_cancel(self)
+
     def _maybe_check_drift(self) -> None:
         """Warn once if the running post-sample mean walks outside the CI band.
 
@@ -314,6 +334,7 @@ class CostEstimator:
 
         if not proceed:
             self._cancelled = True
+            self._maybe_run_cleanup()
             raise EstimationCancelled(
                 f"User declined. Spent ${sampled_actual:.4f} on {self.sample_size} sample iterations."
             )

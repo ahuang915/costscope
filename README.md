@@ -76,6 +76,27 @@ It warns once per excursion and re-arms when the running mean returns inside the
 - `threshold_usd=10.0` — auto-proceed when the upper bound is under the threshold
 - `confirm_fn=...` — supply your own confirmation callback
 
+### Save the sample on abort
+
+Pass `on_cancel=fn` to keep the sample-run outputs around after the user declines. costscope asks `Save sample run? [y/N]` and, on yes, calls `fn(estimator)` before raising `EstimationCancelled`. The callback gets the estimator (`ce.estimate`, `ce.actual_total_cost`, `ce.iterations_done`); your own per-iteration outputs come through the closure.
+
+```python
+results = []
+
+def save_sample(ce):
+    Path("sample_run.json").write_text(json.dumps({
+        "results": results,
+        "estimate": ce.estimate.total_estimate,
+        "spent": ce.actual_total_cost,
+    }))
+
+with CostEstimator(..., on_cancel=save_sample) as ce:
+    for row in rows:
+        results.append(ce.completion(...))
+```
+
+See `examples/batch_500_rows.py`.
+
 ### OpenAI Responses API
 
 `api="auto"` (default) routes `gpt-image-*` and `gpt-5*` to the Responses API, leaving chat-style models on chat completions. Force one explicitly:

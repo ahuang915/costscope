@@ -324,6 +324,87 @@ def test_api_auto_keeps_chat_for_classic_models():
     assert ce.api == "chat"
 
 
+def test_on_cancel_invoked_when_user_saves(monkeypatch):
+    """User declines run, then says yes to save: callback fires with the estimator."""
+    captured = {}
+
+    def save(ce):
+        captured["estimate_total"] = ce.estimate.total_estimate
+        captured["actual_spent"] = ce.actual_total_cost
+        captured["iterations"] = ce.iterations_done
+
+    # confirm_fn returns False → declined; input() returns "y" → save
+    monkeypatch.setattr("builtins.input", lambda _prompt="": "y")
+
+    estimator = CostEstimator(
+        model="o1-mini",
+        total_iterations=100,
+        sample_iterations=10,
+        synthetic=True,
+        synthetic_config=SyntheticConfig(seed=4),
+        confirm_fn=lambda est, model: False,
+        on_cancel=save,
+    )
+    with pytest.raises(EstimationCancelled):
+        with estimator as ce:
+            for _ in range(100):
+                ce.completion(messages=[{"role": "user", "content": "hi"}])
+
+    assert captured["iterations"] == 10
+    assert captured["estimate_total"] > 0
+    assert captured["actual_spent"] > 0
+
+
+def test_on_cancel_skipped_when_user_declines_save(monkeypatch):
+    """User declines run, then says no to save: callback does NOT fire."""
+    calls = []
+
+    monkeypatch.setattr("builtins.input", lambda _prompt="": "n")
+
+    estimator = CostEstimator(
+        model="o1-mini",
+        total_iterations=100,
+        sample_iterations=10,
+        synthetic=True,
+        synthetic_config=SyntheticConfig(seed=5),
+        confirm_fn=lambda est, model: False,
+        on_cancel=lambda ce: calls.append(ce),
+    )
+    with pytest.raises(EstimationCancelled):
+        with estimator as ce:
+            for _ in range(100):
+                ce.completion(messages=[{"role": "user", "content": "hi"}])
+
+    assert calls == []
+
+
+def test_on_cancel_not_called_without_callback(monkeypatch):
+    """No on_cancel registered: no save prompt is shown."""
+    prompts = []
+
+    def fake_input(prompt=""):
+        prompts.append(prompt)
+        return ""
+
+    monkeypatch.setattr("builtins.input", fake_input)
+
+    estimator = CostEstimator(
+        model="o1-mini",
+        total_iterations=100,
+        sample_iterations=10,
+        synthetic=True,
+        synthetic_config=SyntheticConfig(seed=6),
+        confirm_fn=lambda est, model: False,  # no input() call from confirm
+    )
+    with pytest.raises(EstimationCancelled):
+        with estimator as ce:
+            for _ in range(100):
+                ce.completion(messages=[{"role": "user", "content": "hi"}])
+
+    # confirm_fn was provided, so the only input() would have been the save prompt
+    assert prompts == []
+
+
 def test_rejects_both_total_aliases():
     with pytest.raises(ValueError, match="only one"):
         CostEstimator(
