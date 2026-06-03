@@ -232,6 +232,143 @@ def test_drift_quiet_when_costs_stay_within_band(capsys):
     assert not ce.drift_detected
 
 
+def test_drift_action_prompt_continues_on_yes(monkeypatch, capsys):
+    """drift_action='prompt' + user says y → run finishes, drift still detected."""
+    monkeypatch.setattr("builtins.input", lambda _prompt="": "y")
+    with CostEstimator(
+        model="o1-mini",
+        total_iterations=60,
+        sample_iterations=10,
+        synthetic=True,
+        synthetic_config=SyntheticConfig(seed=1),
+        auto_confirm=True,
+        drift_check_every=10,
+        drift_action="prompt",
+    ) as ce:
+        for _ in range(10):
+            ce.record(cost=0.01)
+        for _ in range(20):
+            ce.record(cost=0.10)
+
+    assert ce.iterations_done == 30
+    assert ce.drift_detected
+    err = capsys.readouterr().err
+    assert "drift" in err.lower()
+
+
+def test_drift_action_prompt_raises_on_no(monkeypatch):
+    """drift_action='prompt' + user says n → EstimationCancelled mid-loop."""
+    monkeypatch.setattr("builtins.input", lambda _prompt="": "n")
+    estimator = CostEstimator(
+        model="o1-mini",
+        total_iterations=60,
+        sample_iterations=10,
+        synthetic=True,
+        synthetic_config=SyntheticConfig(seed=1),
+        auto_confirm=True,
+        drift_check_every=10,
+        drift_action="prompt",
+    )
+    with pytest.raises(EstimationCancelled, match="drift"):
+        with estimator as ce:
+            for _ in range(10):
+                ce.record(cost=0.01)
+            for _ in range(20):
+                ce.record(cost=0.10)
+
+    # Should have halted at the first drift check (iter 20 = sample 10 + post 10)
+    assert estimator.iterations_done == 20
+
+
+def test_drift_action_prompt_fires_on_cancel(monkeypatch):
+    """Declining the drift prompt triggers the on_cancel cleanup flow."""
+    saved = {}
+
+    def save(ce):
+        saved["iterations"] = ce.iterations_done
+
+    # First input() is the drift prompt (n), second is the save prompt (y).
+    answers = iter(["n", "y"])
+    monkeypatch.setattr("builtins.input", lambda _prompt="": next(answers))
+
+    estimator = CostEstimator(
+        model="o1-mini",
+        total_iterations=60,
+        sample_iterations=10,
+        synthetic=True,
+        synthetic_config=SyntheticConfig(seed=1),
+        auto_confirm=True,
+        drift_check_every=10,
+        drift_action="prompt",
+        on_cancel=save,
+    )
+    with pytest.raises(EstimationCancelled):
+        with estimator as ce:
+            for _ in range(10):
+                ce.record(cost=0.01)
+            for _ in range(20):
+                ce.record(cost=0.10)
+
+    assert saved == {"iterations": 20}
+
+
+def test_drift_action_prompt_only_asks_once(monkeypatch, capsys):
+    """After user accepts a drift once, subsequent excursions warn but don't prompt."""
+    prompts_seen = []
+
+    def fake_input(prompt=""):
+        prompts_seen.append(prompt)
+        return "y"
+
+    monkeypatch.setattr("builtins.input", fake_input)
+    with CostEstimator(
+        model="o1-mini",
+        total_iterations=200,
+        sample_iterations=10,
+        synthetic=True,
+        synthetic_config=SyntheticConfig(seed=1),
+        auto_confirm=True,
+        drift_check_every=10,
+        drift_action="prompt",
+    ) as ce:
+        for _ in range(10):
+            ce.record(cost=0.01)  # tight sample
+        # alternate spikes and recoveries to re-arm the warning multiple times
+        for _ in range(10):
+            ce.record(cost=0.10)  # excursion 1 → prompt
+        for _ in range(10):
+            ce.record(cost=0.01)  # back inside → re-arm
+        for _ in range(10):
+            ce.record(cost=0.10)  # excursion 2 → no second prompt
+
+    # exactly one prompt across the whole run
+    assert sum("drift" in p.lower() for p in prompts_seen) == 1
+
+
+def test_drift_action_default_is_warn():
+    ce = CostEstimator(
+        model="o1-mini",
+        total_iterations=10,
+        sample_iterations=5,
+        synthetic=True,
+        synthetic_config=SyntheticConfig(seed=0),
+        auto_confirm=True,
+    )
+    assert ce.drift_action == "warn"
+
+
+def test_drift_action_rejects_invalid_value():
+    with pytest.raises(ValueError, match="drift_action"):
+        CostEstimator(
+            model="o1-mini",
+            total_iterations=10,
+            sample_iterations=5,
+            synthetic=True,
+            auto_confirm=True,
+            drift_action="explode",
+        )
+
+
 def test_drift_disabled_with_zero(capsys):
     """drift_check_every=0 disables the check entirely."""
     with CostEstimator(

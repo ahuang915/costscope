@@ -91,6 +91,8 @@ at current rate: $6.40.
 
 It warns once per excursion and re-arms when the running mean returns inside the band, so a temporary spike doesn't spam stderr. Use `drift_check_every=N` to change the cadence, or `drift_check_every=0` to disable. Programmatic access via `ce.drift_detected`.
 
+Pass `drift_action="prompt"` to halt the run on the first drift event and ask `Proceed despite drift? [y/N]:`, just like the sample-end confirmation. Decline and costscope runs the same `on_cancel` cleanup flow and raises `EstimationCancelled`. Costscope prompts at most once per run; later excursions still log a warning but don't ask again. In non-interactive contexts (EOF) the prompt declines by default, so headless jobs halt rather than risk overspending.
+
 ### Skip the prompt
 
 - `auto_confirm=True` — always proceed

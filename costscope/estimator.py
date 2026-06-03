@@ -50,6 +50,7 @@ class CostEstimator:
         on_cancel: Optional[CancelCleanupFn] = None,
         api: str = _API_AUTO,
         drift_check_every: int = 20,
+        drift_action: str = "warn",
     ):
         total = self._pick_one(total_iterations, total_calls, "total_iterations", "total_calls")
         if total is None or total < 1:
@@ -61,6 +62,8 @@ class CostEstimator:
             raise ValueError("confidence must be one of 0.90, 0.95, 0.99")
         if api not in (_API_AUTO, _API_CHAT, _API_RESPONSES):
             raise ValueError("api must be 'auto', 'chat', or 'responses'")
+        if drift_action not in ("warn", "prompt"):
+            raise ValueError("drift_action must be 'warn' or 'prompt'")
 
         self.model = model
         self.total_iterations = total
@@ -72,7 +75,9 @@ class CostEstimator:
         self.on_cancel = on_cancel
         self.api = self._resolve_api(model, api)
         self._drift_check_every = max(drift_check_every, 0)
+        self.drift_action = drift_action
         self._drift_detected = False
+        self._drift_prompted = False
 
         self._synthetic = synthetic
         self._backend = SyntheticBackend(synthetic_config or SyntheticConfig()) if synthetic else None
@@ -213,6 +218,18 @@ class CostEstimator:
                 self._exec_bar.update(1)
             self._maybe_check_drift()
 
+    def _prompt_proceed_despite_drift(self) -> bool:
+        """Ask the user whether to continue after a drift warning.
+
+        EOF (non-interactive) is treated as a decline so headless jobs halt
+        rather than risk overspending after a drift event.
+        """
+        try:
+            ans = input("  → Proceed despite drift? [y/N]: ").strip().lower()
+        except EOFError:
+            return False
+        return ans in ("y", "yes")
+
     def _maybe_run_cleanup(self) -> None:
         """Prompt the user; if they confirm, invoke on_cancel with self.
 
@@ -265,6 +282,14 @@ class CostEstimator:
                 file=sys.stderr,
             )
             self._drift_detected = True
+            if self.drift_action == "prompt" and not self._drift_prompted:
+                self._drift_prompted = True
+                if not self._prompt_proceed_despite_drift():
+                    self._cancelled = True
+                    self._maybe_run_cleanup()
+                    raise EstimationCancelled(
+                        f"User declined after drift at iter {self._iterations_done}."
+                    )
         elif not outside and self._drift_detected:
             self._drift_detected = False
 
