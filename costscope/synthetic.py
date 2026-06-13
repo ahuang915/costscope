@@ -3,7 +3,7 @@ import random
 from dataclasses import dataclass, field
 from typing import Any
 
-from .pricing import builtin_cost
+from .pricing import builtin_cost, cost_with_cache
 
 
 @dataclass
@@ -28,6 +28,12 @@ class SyntheticConfig:
     image_output_sigma: float = 0.4
     latency_median: float = 0.0  # seconds; 0 disables simulated latency
     latency_sigma: float = 0.3
+    # Cache-token simulation. Default 0 → no cache activity. Set median>0 to drive
+    # cache_stats branches in tests / demos. The split between read and write per call
+    # is controlled by `cache_hit_probability` (read on a hit, write on a miss).
+    cache_prefix_median: int = 0
+    cache_prefix_sigma: float = 0.3
+    cache_hit_probability: float = 0.5
     seed: int | None = None
     custom_prices: dict[str, tuple[float, float] | tuple[float, float, float]] = field(default_factory=dict)
 
@@ -46,6 +52,11 @@ class SyntheticUsage:
     total_tokens: int
     reasoning_tokens: int
     image_output_tokens: int = 0
+    # Cache fields — populated when SyntheticConfig.cache_prefix_median > 0. Otherwise
+    # left at 0 and treated as "no cache activity" by the estimator.
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
+    input_uncached_tokens: int = 0
 
 
 class SyntheticBackend:
@@ -69,6 +80,16 @@ class SyntheticBackend:
             self._lognorm_float(cfg.latency_median, cfg.latency_sigma)
             if cfg.latency_median > 0 else 0.0
         )
+
+        cache_read = 0
+        cache_write = 0
+        if cfg.cache_prefix_median > 0:
+            prefix = self._lognorm(cfg.cache_prefix_median, cfg.cache_prefix_sigma)
+            if self._rng.random() < cfg.cache_hit_probability:
+                cache_read = prefix
+            else:
+                cache_write = prefix
+
         return SyntheticResponse(
             model=model,
             usage=SyntheticUsage(
@@ -77,6 +98,9 @@ class SyntheticBackend:
                 total_tokens=prompt + output + reasoning + image_out,
                 reasoning_tokens=reasoning,
                 image_output_tokens=image_out,
+                cache_read_tokens=cache_read,
+                cache_write_tokens=cache_write,
+                input_uncached_tokens=prompt,
             ),
             latency_s=latency,
         )
@@ -92,6 +116,17 @@ class SyntheticBackend:
                 usage.prompt_tokens / 1_000_000 * in_price
                 + usage.completion_tokens / 1_000_000 * out_price
                 + usage.image_output_tokens / 1_000_000 * img_price
+            )
+        # No cache activity → keep the cheap pricing path. With cache tokens, defer
+        # to cost_with_cache so the synthetic backend matches real-API pricing rules.
+        if usage.cache_read_tokens or usage.cache_write_tokens:
+            return cost_with_cache(
+                response.model,
+                input_uncached_tokens=usage.prompt_tokens,
+                output_tokens=usage.completion_tokens,
+                cache_read_tokens=usage.cache_read_tokens,
+                cache_write_tokens=usage.cache_write_tokens,
+                image_output_tokens=usage.image_output_tokens,
             )
         return builtin_cost(
             response.model,

@@ -39,6 +39,44 @@ def lookup(model: str) -> Optional[tuple[float, float, float]]:
     Returns None when LiteLLM does not know the model, the fetch fails, or the
     user has set COSTSCOPE_OFFLINE. Callers should fall back to their own table.
     """
+    entry = _entry(model)
+    if entry is None:
+        return None
+    in_cost = entry.get("input_cost_per_token")
+    out_cost = entry.get("output_cost_per_token")
+    if in_cost is None or out_cost is None:
+        return None
+    # LiteLLM stores per-token; costscope stores per-1M.
+    return (float(in_cost) * 1_000_000, float(out_cost) * 1_000_000, 0.0)
+
+
+def lookup_cache_prices(model: str) -> Optional[tuple[Optional[float], Optional[float], Optional[float]]]:
+    """Per-1M-token (cache_read, cache_write_5min, cache_write_1h) prices, or None.
+
+    Pulled from LiteLLM's `cache_read_input_token_cost`,
+    `cache_creation_input_token_cost`, and `cache_creation_input_token_cost_above_1hr`.
+    Any individual field may be None when LiteLLM omits it (e.g. OpenAI models have
+    no write cost; some Anthropic entries only list the 5-min write rate).
+
+    Returns None when no cache fields are present at all — caller should fall back
+    to multiplier-based defaults.
+    """
+    entry = _entry(model)
+    if entry is None:
+        return None
+    read = entry.get("cache_read_input_token_cost")
+    write_5m = entry.get("cache_creation_input_token_cost")
+    write_1h = entry.get("cache_creation_input_token_cost_above_1hr")
+    if read is None and write_5m is None and write_1h is None:
+        return None
+    return (
+        float(read) * 1_000_000 if read is not None else None,
+        float(write_5m) * 1_000_000 if write_5m is not None else None,
+        float(write_1h) * 1_000_000 if write_1h is not None else None,
+    )
+
+
+def _entry(model: str) -> Optional[dict]:
     data = _data()
     if not data:
         return None
@@ -49,14 +87,7 @@ def lookup(model: str) -> Optional[tuple[float, float, float]]:
             if key.lower() == lowered:
                 entry = val
                 break
-    if not isinstance(entry, dict):
-        return None
-    in_cost = entry.get("input_cost_per_token")
-    out_cost = entry.get("output_cost_per_token")
-    if in_cost is None or out_cost is None:
-        return None
-    # LiteLLM stores per-token; costscope stores per-1M.
-    return (float(in_cost) * 1_000_000, float(out_cost) * 1_000_000, 0.0)
+    return entry if isinstance(entry, dict) else None
 
 
 def force_refresh() -> bool:

@@ -41,18 +41,20 @@ with CostEstimator(model="claude-opus-4-7", total_iterations=500) as ce:
 The first 20 iterations are billed normally and used to build a per-iteration cost and time distribution. After that you'll see something like:
 
 ```
-┌────────────────────────────────────────────────────────────┐
-│ Cost & Time Estimate                                       │
-├────────────────────────────────────────────────────────────┤
-│  Model:        claude-opus-4-7                             │
-│  Sample:       20 of 500 iter  (actual $0.4321)            │
-│  Per iter:     $0.0216  (σ $0.0042)                        │
-│  Projected:    $10.81                                      │
-│  95% CI cost:  $10.05 – $11.57  (±7.0%)                    │
-│  Per iter time:  3.4s                                      │
-│  Wall time:    28min                                       │
-│  95% CI time:  26min – 30min                               │
-└────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────┐
+│ Cost & Time Estimate                                                     │
+├──────────────────────────────────────────────────────────────────────────┤
+│  Model:        claude-opus-4-7                                           │
+│  Sample:       20 of 500 iter  (actual $0.4321)                          │
+│  Per iter:     $0.0216  (σ $0.0042)                                      │
+│  Projected:    $10.81                                                    │
+│  95% CI cost:  $10.05 – $11.57  (±7.0%)                                  │
+│  Per iter time:  3.4s                                                    │
+│  Wall time:    28min                                                     │
+│  95% CI time:  26min – 30min                                             │
+│  Cache:        0.31 read/write (break-even ≥ 0.28 @ 5min)  ✓ paying off  │
+│  Counterfactual: no cache $10.85 (+$0.04) / 1h TTL $12.63 (+$1.82)       │
+└──────────────────────────────────────────────────────────────────────────┘
   → Proceed? [y/N]:
 ```
 
@@ -92,6 +94,72 @@ at current rate: $6.40.
 It warns once per excursion and re-arms when the running mean returns inside the band, so a temporary spike doesn't spam stderr. Use `drift_check_every=N` to change the cadence, or `drift_check_every=0` to disable. Programmatic access via `ce.drift_detected`.
 
 Pass `drift_action="prompt"` to halt the run on the first drift event and ask `Proceed despite drift? [y/N]:`, just like the sample-end confirmation. Decline and costscope runs the same `on_cancel` cleanup flow and raises `EstimationCancelled`. Costscope prompts at most once per run; later excursions still log a warning but don't ask again. In non-interactive contexts (EOF) the prompt declines by default, so headless jobs halt rather than risk overspending.
+
+### Prompt-cache analysis
+
+If the workload uses prompt caching, the box gains a Cache section reporting whether caching is actually paying for itself on your traffic.
+
+**Anthropic**: the headline is read/write ratio against the break-even threshold. Anthropic charges a write premium (1.25× for the 5-min ephemeral cache, 2.0× for the 1-hour) and a read discount (0.10×); each cache entry has to be hit at least 0.28 times for the 5-min cache to break even (1.11 for 1-hour). The counterfactual row reprices the same workload under "no caching" and "1h TTL" so you can see whether flipping a TTL knob would actually save anything:
+
+```
+│  Cache:        0.31 read/write (break-even ≥ 0.28 @ 5min)  ✓ paying off
+│  Counterfactual: no cache $10.85 (+$0.04) / 1h TTL $12.63 (+$1.82)
+```
+
+A minus sign in the counterfactual (`no cache $9.41 (-$0.99)`) is the punchline: turning caching *off* would have been cheaper. Caching isn't free — the write premium is real, and on slow-cadence or model-switching workloads it can outpace the read savings.
+
+**OpenAI**: writes are free, so the framing is hit-rate (`cached_tokens / prompt_tokens`). Any hit is a strict win. If the heuristic detects a low hit rate alongside *stable* per-call prompt sizes (low coefficient of variation) and no `prompt_cache_key` passed, it surfaces a suggestion:
+
+```
+│  Cache:        hit rate 4%  (1,507 / 41,346 prompt tok)
+│  Writes are free; no break-even threshold.
+│  Suggestion:   try `prompt_cache_key` — prompt size is stable (CV 12%),
+│                so misses are likely routing-related.
+```
+
+Programmatic access: `ce.cache_verdict` after sampling exposes the underlying `CacheVerdict` dataclass.
+
+The cache-aware drift detector enriches the standard cost-drift message and runs an independent check on cache-value drift (whether the per-iter $ saved by caching has shifted significantly between sample and exec). Knob: `cache_drift_threshold=0.05` (default 5%). Programmatic flag: `ce.cache_drift_detected`.
+
+```
+[costscope] drift at iter 40: post-sample mean $0.06/iter is above the 95% CI band ...
+  cache: read/write ratio 25.20 → 0.03 (break-even 0.28 @ 5min)
+
+[costscope] cache drift at iter 40: caching now saves $-0.009/iter vs $0.033/iter in
+sample (less savings, Δ 30% of per-iter cost; threshold 5%).
+```
+
+See `examples/cache_demo.py`, `cache_drift_demo.py`, `cache_recovery_demo.py`, and `prompt_cache_key_demo.py`.
+
+### Auto-switch caching
+
+`auto_switch_caching=True` lets costscope actually mutate your kwargs based on what the sample showed and what probe windows discover mid-run:
+
+```python
+with CostEstimator(..., auto_switch_caching=True) as ce:
+    for row in rows:
+        ce.completion(messages=...)   # cache_control markers may be stripped/restored
+```
+
+Lifecycle:
+
+1. **Post-sample**: if the sample verdict says caching is losing money (Anthropic ratio below break-even), strip `cache_control` markers from subsequent calls. A deep copy is made so your input dict is left untouched.
+2. **Probe windows during exec**: every `probe_every` calls, a window of `probe_size` consecutive calls quietly runs with markers restored to test whether caching now helps.
+3. **Hysteresis-gated restore**: after `auto_switch_consecutive_required` probe windows agree that caching saves money, markers are restored permanently.
+4. **Budget ceiling**: probes stop firing once cumulative probe overhead exceeds `max_probe_overhead_pct` of total spend.
+
+Presets collapse the knobs into one decision:
+
+```python
+auto_switch_caching=True            # balanced (default values)
+auto_switch_caching="aggressive"    # consecutive_required=1, probe_every=10
+auto_switch_caching="patient"       # consecutive_required=3, probe_every=40, probe_size=5
+auto_switch_caching="dry_run"       # log decisions, don't mutate
+```
+
+Individual kwargs (`probe_every=15`, etc.) still override the preset's value. Programmatic state: `ce.current_cache_mode` is `"default"` or `"switched_off"`.
+
+Scope: Anthropic on/off only in v0.7. TTL switching (5min ↔ 1h) and OpenAI `prompt_cache_key` injection are planned for v0.8. See `examples/auto_switch_demo.py`.
 
 ### Skip the prompt
 

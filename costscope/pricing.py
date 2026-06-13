@@ -72,6 +72,92 @@ def builtin_cost(
     )
 
 
+# Default multipliers (vs. plain input rate) when LiteLLM doesn't have the field.
+# Anthropic's documented numbers: 5-min write = 1.25×, 1-hour write = 2.0×, read = 0.10×.
+# OpenAI varies by model; default to 0.5× read (gpt-4o family) when nothing is in LiteLLM.
+DEFAULT_ANTHROPIC_CACHE_READ_MULT = 0.10
+DEFAULT_ANTHROPIC_CACHE_WRITE_5M_MULT = 1.25
+DEFAULT_ANTHROPIC_CACHE_WRITE_1H_MULT = 2.00
+DEFAULT_OPENAI_CACHE_READ_MULT = 0.50
+
+
+def _is_anthropic_model(model: str) -> bool:
+    return model.lower().startswith("claude")
+
+
+def lookup_cache_prices(model: str) -> tuple[float, float, float]:
+    """Per-1M (cache_read, cache_write_5min, cache_write_1h) prices for `model`.
+
+    Tries LiteLLM first (it carries `cache_read_input_token_cost`,
+    `cache_creation_input_token_cost`, and `cache_creation_input_token_cost_above_1hr`
+    for many models). For any field LiteLLM omits, falls back to:
+      - Anthropic: 0.10× / 1.25× / 2.0× of the plain input rate (documented multipliers)
+      - OpenAI:    0.50× / 0× / 0×    (writes are free; default read discount for gpt-4o)
+
+    Raises KeyError if the model has no plain input price at all (same behavior as
+    `builtin_cost`), since cache prices are expressed relative to it.
+    """
+    base = lookup_prices(model)
+    if base is None:
+        raise KeyError(
+            f"No price found for model '{model}'. Cache prices need the plain input "
+            f"rate as a fallback. Known built-ins: {sorted(_BUILTIN_PRICES)}."
+        )
+    input_per_1m = base[0]
+
+    is_anth = _is_anthropic_model(model)
+    if is_anth:
+        fb_read = input_per_1m * DEFAULT_ANTHROPIC_CACHE_READ_MULT
+        fb_w5m = input_per_1m * DEFAULT_ANTHROPIC_CACHE_WRITE_5M_MULT
+        fb_w1h = input_per_1m * DEFAULT_ANTHROPIC_CACHE_WRITE_1H_MULT
+    else:
+        fb_read = input_per_1m * DEFAULT_OPENAI_CACHE_READ_MULT
+        fb_w5m = 0.0
+        fb_w1h = 0.0
+
+    cache = litellm_prices.lookup_cache_prices(model) if not litellm_prices.offline() else None
+    if cache is None:
+        return (fb_read, fb_w5m, fb_w1h)
+    read, w5m, w1h = cache
+    return (
+        read if read is not None else fb_read,
+        w5m if w5m is not None else fb_w5m,
+        w1h if w1h is not None else fb_w1h,
+    )
+
+
+def cost_with_cache(
+    model: str,
+    *,
+    input_uncached_tokens: int,
+    output_tokens: int,
+    cache_read_tokens: int = 0,
+    cache_write_tokens: int = 0,
+    image_output_tokens: int = 0,
+) -> float:
+    """Cost of one call, billing each token category at its correct rate.
+
+    `input_uncached_tokens` is the portion of the prompt that wasn't served from
+    cache (and isn't being written to cache). For Anthropic, this matches the
+    `input_tokens` field on the usage object directly. For OpenAI, it's
+    `prompt_tokens - cached_tokens`.
+
+    Cache reads and writes are billed at the rates from `lookup_cache_prices`.
+    """
+    base = lookup_prices(model)
+    if base is None:
+        raise KeyError(f"No price found for model '{model}'.")
+    in_price, out_price, img_price = base
+    cache_read_price, cache_write_price, _w1h = lookup_cache_prices(model)
+    return (
+        (input_uncached_tokens / 1_000_000) * in_price
+        + (output_tokens / 1_000_000) * out_price
+        + (image_output_tokens / 1_000_000) * img_price
+        + (cache_read_tokens / 1_000_000) * cache_read_price
+        + (cache_write_tokens / 1_000_000) * cache_write_price
+    )
+
+
 def _resolve(model: str) -> str | None:
     if model in _BUILTIN_PRICES:
         return model
